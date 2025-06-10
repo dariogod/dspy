@@ -114,8 +114,21 @@ class JSONAdapter(ChatAdapter):
                 else ""
             )
 
-        message = "Respond with a JSON object in the following order of fields: "
-        message += ", then ".join(f"`{f}`{type_info(v)}" for f, v in signature.output_fields.items())
+        if len(signature.output_fields) == 1:
+            field_name, field_info = next(iter(signature.output_fields.items()))
+            field_annotation = field_info.annotation
+            origin_type = get_origin(field_annotation)
+            
+            # If single field expects a list, require root-level array format
+            if origin_type in (list, tuple) or field_annotation in (list, tuple):
+                message = f"Respond with a root-level JSON array containing {get_annotation_name(field_annotation)} elements."
+            else:
+                message = "Respond with a JSON object in the following order of fields: "
+                message += ", then ".join(f"`{f}`{type_info(v)}" for f, v in signature.output_fields.items())
+        else:
+            message = "Respond with a JSON object in the following order of fields: "
+            message += ", then ".join(f"`{f}`{type_info(v)}" for f, v in signature.output_fields.items())
+        
         message += "."
         return message
 
@@ -132,36 +145,109 @@ class JSONAdapter(ChatAdapter):
         return self.format_field_with_value(fields_with_values, role="assistant")
 
     def parse(self, signature: Type[Signature], completion: str) -> dict[str, Any]:
-        pattern = r"\{(?:[^{}]|(?R))*\}"
-        match = regex.search(pattern, completion, regex.DOTALL)
+        # First try to find JSON object pattern, then fallback to any JSON pattern
+        # Look for balanced braces/brackets in the completion
+        parsed_json = None
+        
+        # Try to extract JSON object first
+        object_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+        match = regex.search(object_pattern, completion, regex.DOTALL)
         if match:
-            completion = match.group(0)
-        fields = json_repair.loads(completion)
+            try:
+                parsed_json = json_repair.loads(match.group(0))
+            except Exception:
+                pass
+        
+        # If no valid object found, try to extract JSON array
+        if parsed_json is None:
+            array_pattern = r'\[[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]'
+            match = regex.search(array_pattern, completion, regex.DOTALL)
+            if match:
+                try:
+                    parsed_json = json_repair.loads(match.group(0))
+                except Exception:
+                    pass
+        
+        # If still no match, try to parse the entire completion
+        if parsed_json is None:
+            try:
+                parsed_json = json_repair.loads(completion)
+            except Exception:
+                raise AdapterParseError(
+                    adapter_name="JSONAdapter",
+                    signature=signature,
+                    lm_response=completion,
+                    message="LM response cannot be parsed as valid JSON.",
+                )
 
-        if not isinstance(fields, dict):
+        # Check if we have a single list field that requires root-level array format
+        single_list_field = None
+        if len(signature.output_fields) == 1:
+            field_name, field_info = next(iter(signature.output_fields.items()))
+            field_annotation = field_info.annotation
+            origin_type = get_origin(field_annotation)
+            if origin_type in (list, tuple) or field_annotation in (list, tuple):
+                single_list_field = (field_name, field_info)
+
+        # Handle dictionary case
+        if isinstance(parsed_json, dict):
+            # If we have a single list field, reject object format - root-level array is obligatory
+            if single_list_field:
+                raise AdapterParseError(
+                    adapter_name="JSONAdapter",
+                    signature=signature,
+                    lm_response=completion,
+                    message=f"Single list output field '{single_list_field[0]}' requires root-level JSON array format, not object format.",
+                )
+            
+            fields = {k: v for k, v in parsed_json.items() if k in signature.output_fields}
+
+            # Attempt to cast each value to type signature.output_fields[k].annotation.
+            for k, v in fields.items():
+                if k in signature.output_fields:
+                    fields[k] = parse_value(v, signature.output_fields[k].annotation)
+
+            if fields.keys() != signature.output_fields.keys():
+                raise AdapterParseError(
+                    adapter_name="JSONAdapter",
+                    signature=signature,
+                    lm_response=completion,
+                    parsed_result=fields,
+                )
+
+            return fields
+        
+        # Handle list case
+        elif isinstance(parsed_json, list):
+            # Only allow root-level lists for single list fields
+            if single_list_field:
+                field_name, field_info = single_list_field
+                try:
+                    parsed_value = parse_value(parsed_json, field_info.annotation)
+                    return {field_name: parsed_value}
+                except Exception:
+                    raise AdapterParseError(
+                        adapter_name="JSONAdapter",
+                        signature=signature,
+                        lm_response=completion,
+                        message=f"Failed to parse root-level JSON array as {get_annotation_name(field_info.annotation)}.",
+                    )
+            else:
+                raise AdapterParseError(
+                    adapter_name="JSONAdapter",
+                    signature=signature,
+                    lm_response=completion,
+                    message="Root-level JSON arrays are only supported for signatures with a single list output field.",
+                )
+        
+        # Handle other JSON types (null, number, string, boolean) - not supported
+        else:
             raise AdapterParseError(
                 adapter_name="JSONAdapter",
                 signature=signature,
                 lm_response=completion,
-                message="LM response cannot be serialized to a JSON object.",
+                message="Root-level JSON primitives are not supported. Use JSON object or array format.",
             )
-
-        fields = {k: v for k, v in fields.items() if k in signature.output_fields}
-
-        # Attempt to cast each value to type signature.output_fields[k].annotation.
-        for k, v in fields.items():
-            if k in signature.output_fields:
-                fields[k] = parse_value(v, signature.output_fields[k].annotation)
-
-        if fields.keys() != signature.output_fields.keys():
-            raise AdapterParseError(
-                adapter_name="JSONAdapter",
-                signature=signature,
-                lm_response=completion,
-                parsed_result=fields,
-            )
-
-        return fields
 
     def format_field_with_value(self, fields_with_values: Dict[FieldInfoWithName, Any], role: str = "user") -> str:
         """

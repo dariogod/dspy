@@ -419,3 +419,110 @@ def test_json_adapter_with_tool():
             },
         },
     }
+
+
+def test_json_adapter_parse_root_level_list_single_field():
+    """Test that JSONAdapter requires root-level lists when there's a single list output field."""
+    from typing import List
+    
+    signature = dspy.make_signature("question -> items: List[str]")
+    adapter = dspy.JSONAdapter()
+    
+    # Test root-level list (should work)
+    result = adapter.parse(signature, '["item1", "item2", "item3"]')
+    assert result == {"items": ["item1", "item2", "item3"]}
+    
+    # Test object format (should now be rejected for single list fields)
+    with pytest.raises(dspy.utils.exceptions.AdapterParseError) as e:
+        adapter.parse(signature, '{"items": ["item1", "item2", "item3"]}')
+    
+    assert "requires root-level JSON array format" in str(e.value)
+
+
+def test_json_adapter_parse_root_level_list_multiple_fields():
+    """Test that JSONAdapter raises error for root-level lists when there are multiple output fields."""
+    from typing import List
+    
+    signature = dspy.make_signature("question -> items: List[str], count: int")
+    adapter = dspy.JSONAdapter()
+    
+    # Should raise error for root-level list with multiple fields
+    with pytest.raises(dspy.utils.exceptions.AdapterParseError) as e:
+        adapter.parse(signature, '["item1", "item2", "item3"]')
+    
+    assert "only supported for signatures with a single list output field" in str(e.value)
+
+
+def test_json_adapter_parse_root_level_list_non_list_field():
+    """Test that JSONAdapter raises error for root-level lists when single field doesn't expect a list."""
+    signature = dspy.make_signature("question -> answer: str")
+    adapter = dspy.JSONAdapter()
+    
+    # Should raise error for root-level list when field doesn't expect a list
+    with pytest.raises(dspy.utils.exceptions.AdapterParseError) as e:
+        adapter.parse(signature, '["item1", "item2", "item3"]')
+    
+    assert "only supported for signatures with a single list output field" in str(e.value)
+
+
+def test_json_adapter_parse_root_level_primitives_not_supported():
+    """Test that JSONAdapter rejects root-level primitives."""
+    # Test string
+    signature = dspy.make_signature("question -> answer: str")
+    adapter = dspy.JSONAdapter()
+    
+    with pytest.raises(dspy.utils.exceptions.AdapterParseError) as e:
+        adapter.parse(signature, '"This is a string answer"')
+    assert "Root-level JSON primitives are not supported" in str(e.value)
+    
+    # Test number
+    signature = dspy.make_signature("question -> count: int")
+    adapter = dspy.JSONAdapter()
+    
+    with pytest.raises(dspy.utils.exceptions.AdapterParseError) as e:
+        adapter.parse(signature, '42')
+    assert "Root-level JSON primitives are not supported" in str(e.value)
+    
+    # Test boolean
+    signature = dspy.make_signature("question -> is_valid: bool")
+    adapter = dspy.JSONAdapter()
+    
+    with pytest.raises(dspy.utils.exceptions.AdapterParseError) as e:
+        adapter.parse(signature, 'true')
+    assert "Root-level JSON primitives are not supported" in str(e.value)
+
+
+def test_json_adapter_single_non_list_field_requires_object():
+    """Test that single non-list fields require JSON object format."""
+    signature = dspy.make_signature("question -> answer: str")
+    adapter = dspy.JSONAdapter()
+    
+    # Object format should work
+    result = adapter.parse(signature, '{"answer": "This is my answer"}')
+    assert result == {"answer": "This is my answer"}
+
+
+def test_json_adapter_user_message_output_requirements_with_lists():
+    """Test that user message requirements are updated correctly for list fields."""
+    from typing import List
+    
+    # Single list field - should require root-level array
+    signature = dspy.make_signature("question -> items: List[str]")
+    adapter = dspy.JSONAdapter()
+    message = adapter.user_message_output_requirements(signature)
+    assert "root-level JSON array" in message
+    # For root-level arrays, we don't mention the field name
+    
+    # Single non-list field - should require object
+    signature = dspy.make_signature("question -> answer: str")
+    adapter = dspy.JSONAdapter()
+    message = adapter.user_message_output_requirements(signature)
+    assert "JSON object" in message
+    assert "answer" in message
+    
+    # Multiple fields - should use object format
+    signature = dspy.make_signature("question -> answer: str, confidence: float")
+    adapter = dspy.JSONAdapter()
+    message = adapter.user_message_output_requirements(signature)
+    assert "JSON object" in message
+    assert "answer" in message and "confidence" in message
