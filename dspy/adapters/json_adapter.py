@@ -92,6 +92,18 @@ class JSONAdapter(ChatAdapter):
         parts.append("All interactions will be structured in the following way, with the appropriate values filled in.")
 
         def format_signature_fields_for_instructions(fields: Dict[str, FieldInfo], role: str):
+            # Check if we have a single list field that should be formatted as root-level array
+            if role == "assistant" and len(fields) == 1:
+                field_name, field_info = next(iter(fields.items()))
+                field_annotation = field_info.annotation
+                origin_type = get_origin(field_annotation)
+                
+                if origin_type in (list, tuple) or field_annotation in (list, tuple):
+                    # For single list fields, return root-level array format
+                    translated_type = translate_field_type(field_name, field_info)
+                    return json.dumps(serialize_for_json(translated_type), indent=2)
+            
+            # Default behavior for non-single-list cases
             return self.format_field_with_value(
                 fields_with_values={
                     FieldInfoWithName(name=field_name, info=field_info): translate_field_type(field_name, field_info)
