@@ -100,8 +100,7 @@ class JSONAdapter(ChatAdapter):
                 
                 if origin_type in (list, tuple) or field_annotation in (list, tuple):
                     # For single list fields, return root-level array format
-                    translated_type = translate_field_type(field_name, field_info)
-                    return json.dumps(serialize_for_json(translated_type), indent=2)
+                    return translate_field_type(field_name, field_info)
             
             # Default behavior for non-single-list cases
             return self.format_field_with_value(
@@ -114,7 +113,12 @@ class JSONAdapter(ChatAdapter):
 
         parts.append("Inputs will have the following structure:")
         parts.append(format_signature_fields_for_instructions(signature.input_fields, role="user"))
-        parts.append("Outputs will be a JSON object with the following fields.")
+
+        if len(signature.output_fields) == 1 and next(iter(signature.output_fields.values())).annotation in (list, tuple):
+            field_name = next(iter(signature.output_fields.keys()))
+            parts.append(f"Outputs will be a JSON array for the field `{field_name}`.")
+        else:
+            parts.append("Outputs will be a JSON object with the following fields.")
         parts.append(format_signature_fields_for_instructions(signature.output_fields, role="assistant"))
         return "\n\n".join(parts).strip()
 
@@ -133,7 +137,7 @@ class JSONAdapter(ChatAdapter):
             
             # If single field expects a list, require root-level array format
             if origin_type in (list, tuple) or field_annotation in (list, tuple):
-                message = f"Respond with a root-level JSON array containing {get_annotation_name(field_annotation)} elements."
+                message = f"Respond with a JSON array containing {get_annotation_name(field_annotation)} elements."
             else:
                 message = "Respond with a JSON object in the following order of fields: "
                 message += ", then ".join(f"`{f}`{type_info(v)}" for f, v in signature.output_fields.items())
