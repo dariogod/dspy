@@ -114,7 +114,12 @@ class JSONAdapter(ChatAdapter):
         parts.append("Inputs will have the following structure:")
         parts.append(format_signature_fields_for_instructions(signature.input_fields, role="user"))
 
-        if len(signature.output_fields) == 1 and next(iter(signature.output_fields.values())).annotation in (list, tuple):
+        print("--------------------------------")
+        print(signature.output_fields)
+        print(next(iter(signature.output_fields.values())).annotation)
+        print(get_origin(next(iter(signature.output_fields.values())).annotation))
+        print("--------------------------------")
+        if len(signature.output_fields) == 1 and get_origin(next(iter(signature.output_fields.values())).annotation) in (list, tuple):
             field_name = next(iter(signature.output_fields.keys()))
             parts.append(f"Outputs will be a JSON array for the field `{field_name}`.")
         else:
